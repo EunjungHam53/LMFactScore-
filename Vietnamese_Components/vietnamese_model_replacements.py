@@ -245,8 +245,11 @@ class VietnameseKGExtractor:
             all_relations = []
             for chunk in chunks:
                 try:
+                    # Add Vietnamese instruction prompt for better relation extraction
+                    prompt_text = f"Trích xuất các mối quan hệ từ văn bản sau:\n{chunk}"
+                    
                     inputs = self.tokenizer_rel(
-                        chunk,
+                        prompt_text,
                         max_length=512,
                         truncation=True,
                         return_tensors="pt"
@@ -277,31 +280,60 @@ class VietnameseKGExtractor:
             return []
     
     def _parse_rebel_output(self, decoded: str, entities: List[str]) -> List[Tuple[str, str, str]]:
-        """Parse REBEL output format"""
+        """Parse REBEL output format - WITH DEBUG"""
+        logger.info(f"REBEL raw output: {decoded[:300]}...")  # Debug: show raw output
+        
         relations = []
         
-        # REBEL format: <triplet> subject <subj> predicate <obj> object
-        for triplet_str in decoded.split('<triplet>')[1:]:
-            try:
-                # Extract subject
-                if '<subj>' not in triplet_str:
-                    continue
-                subject = triplet_str.split('<subj>')[0].strip()
-                
-                # Extract object and predicate
-                remaining = triplet_str.split('<subj>')[1]
-                if '<obj>' not in remaining:
-                    continue
-                
-                predicate = remaining.split('<obj>')[0].strip()
-                obj = remaining.split('<obj>')[1].split('</s>')[0].strip()
-                
-                if subject and predicate and obj:
-                    relations.append((subject, predicate, obj))
-            except Exception as e:
-                logger.debug(f"Error parsing triplet: {e}")
-                continue
+        # REBEL format variants to try
+        # Format 1: <triplet> subject <subj> predicate <obj> object </s>
+        # Format 2: subject | predicate | object
         
+        if '<triplet>' in decoded:
+            logger.info("Using <triplet> format parser")
+            for triplet_str in decoded.split('<triplet>')[1:]:
+                try:
+                    if '<subj>' not in triplet_str or '<obj>' not in triplet_str:
+                        continue
+                    
+                    subject = triplet_str.split('<subj>')[0].strip()
+                    remaining = triplet_str.split('<subj>')[1]
+                    predicate = remaining.split('<obj>')[0].strip()
+                    obj = remaining.split('<obj>')[1].split('</s>')[0].strip()
+                    
+                    if subject and predicate and obj:
+                        relations.append((subject, predicate, obj))
+                        logger.debug(f"Parsed triplet: {subject} | {predicate} | {obj}")
+                except Exception as e:
+                    logger.debug(f"Error parsing triplet: {e}")
+                    continue
+        
+        elif '|' in decoded:
+            # Fallback: simple pipe-separated format
+            logger.info("Using pipe-separated format parser")
+            for line in decoded.split('\n'):
+                if '|' in line:
+                    parts = [p.strip() for p in line.split('|')]
+                    if len(parts) >= 3:
+                        subject, predicate, obj = parts[0], parts[1], parts[2]
+                        if subject and predicate and obj:
+                            relations.append((subject, predicate, obj))
+                            logger.debug(f"Parsed line: {subject} | {predicate} | {obj}")
+        
+        else:
+            # If neither format found, try to extract using spacy-like patterns
+            logger.warning(f"No standard REBEL format found. Raw output:\n{decoded}")
+            # Try simple regex pattern matching
+            import re
+            # Match patterns like "X is Y", "X has Y", "X located in Y"
+            pattern = r'(\w+(?:\s+\w+)*?)\s+(?:is|has|located in|of|in|at|by|from)\s+(\w+(?:\s+\w+)*)'
+            matches = re.findall(pattern, decoded, re.IGNORECASE)
+            for subject, obj in matches[:5]:  # Limit to 5 to avoid noise
+                predicate = 'related_to'
+                relations.append((subject, predicate, obj))
+                logger.debug(f"Pattern-matched: {subject} | {predicate} | {obj}")
+        
+        logger.info(f"Successfully parsed {len(relations)} relations from output")
         return relations
 
 
