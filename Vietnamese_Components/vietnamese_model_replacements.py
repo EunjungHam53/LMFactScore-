@@ -13,6 +13,7 @@ from transformers import (
 from typing import List, Dict, Tuple
 import logging
 import re
+import spacy
 
 logger = logging.getLogger(__name__)
 
