@@ -183,41 +183,94 @@ class VietnameseKGExtractor:
         return entities, relations
     
     def _extract_entities(self, text: str) -> List[str]:
-        """Extract named entities using Vietnamese NER"""
+        """Extract named entities using Vietnamese NER - với chunking"""
         try:
-            ner_results = self.ner_pipeline(text)
-            entities = list(set([ent['word'] for ent in ner_results]))
-            logger.info(f"Extracted {len(entities)} entities")
+            chunk_size = 400  # tokens tương đương ~1600 chars
+            chunks = self._chunk_text(text, chunk_size)
+            
+            all_entities = set()
+            for chunk in chunks:
+                try:
+                    ner_results = self.ner_pipeline(chunk)
+                    entities = [ent['word'] for ent in ner_results]
+                    all_entities.update(entities)
+                except Exception as chunk_err:
+                    logger.warning(f"Error processing chunk: {chunk_err}")
+                    continue
+            
+            entities = list(all_entities)
+            logger.info(f"Extracted {len(entities)} entities from {len(chunks)} chunks")
             return entities
         except Exception as e:
             logger.error(f"Error in NER: {e}")
             return []
+
+    def _chunk_text(self, text: str, chunk_size: int = 400) -> List[str]:
+        """Chia text thành các chunks để xử lý"""
+        # Chia bằng sentence để không cắt giữa câu
+        sentences = self._split_vietnamese_sentences(text)
+        
+        chunks = []
+        current_chunk = []
+        current_length = 0
+        
+        for sentence in sentences:
+            sentence_length = len(sentence.split())
+            if current_length + sentence_length > chunk_size and current_chunk:
+                chunks.append(' '.join(current_chunk))
+                current_chunk = [sentence]
+                current_length = sentence_length
+            else:
+                current_chunk.append(sentence)
+                current_length += sentence_length
+        
+        if current_chunk:
+            chunks.append(' '.join(current_chunk))
+        
+        return chunks
+
+    def _split_vietnamese_sentences(self, text: str) -> List[str]:
+        """Chia text thành các câu theo cách tiếng Việt"""
+        # Split by common Vietnamese sentence endings
+        import re
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        return [s.strip() for s in sentences if s.strip()]
     
     def _extract_relations(self, text: str, entities: List[str]) -> List[Tuple[str, str, str]]:
-        """Extract relations using mREBEL (multilingual REBEL)"""
+        """Extract relations using mREBEL - với chunking"""
         try:
-            # Truncate text nếu quá dài
-            inputs = self.tokenizer_rel(
-                text,
-                max_length=512,
-                truncation=True,
-                return_tensors="pt"
-            ).to(self.device)
+            chunk_size = 400
+            chunks = self._chunk_text(text, chunk_size)
             
-            with torch.no_grad():
-                outputs = self.model_rel.generate(
-                    **inputs,
-                    max_length=256,
-                    num_beams=3,
-                    num_return_sequences=1
-                )
+            all_relations = []
+            for chunk in chunks:
+                try:
+                    inputs = self.tokenizer_rel(
+                        chunk,
+                        max_length=512,
+                        truncation=True,
+                        return_tensors="pt"
+                    ).to(self.device)
+                    
+                    with torch.no_grad():
+                        outputs = self.model_rel.generate(
+                            **inputs,
+                            max_length=256,
+                            num_beams=3,
+                            num_return_sequences=1
+                        )
+                    
+                    decoded = self.tokenizer_rel.decode(outputs[0], skip_special_tokens=False)
+                    chunk_relations = self._parse_rebel_output(decoded, entities)
+                    all_relations.extend(chunk_relations)
+                except Exception as chunk_err:
+                    logger.warning(f"Error processing relation chunk: {chunk_err}")
+                    continue
             
-            decoded = self.tokenizer_rel.decode(outputs[0], skip_special_tokens=False)
-            
-            # Parse REBEL output
-            relations = self._parse_rebel_output(decoded, entities)
-            logger.info(f"Extracted {len(relations)} relations")
-            return relations
+            # Deduplicate relations
+            unique_relations = list(set(all_relations))
+            logger.info(f"Extracted {len(unique_relations)} relations from {len(chunks)} chunks")
+            return unique_relations
             
         except Exception as e:
             logger.error(f"Error in relation extraction: {e}")
