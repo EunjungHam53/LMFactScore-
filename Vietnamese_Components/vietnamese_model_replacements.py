@@ -204,12 +204,58 @@ class VietnameseKGExtractor:
         
         return entities, relations
     
+    def _safe_truncate(self, text: str, max_chars: int = 2000) -> str:
+        """
+        Truncate text an toàn tại sentence boundary
+        Tránh cắt giữa câu làm mất entities
+        
+        Args:
+            text: Input text
+            max_chars: Max characters to keep
+        
+        Returns:
+            Truncated text at sentence boundary
+        """
+        if len(text) <= max_chars:
+            return text
+        
+        # Truncate tại max_chars
+        truncated = text[:max_chars]
+        
+        # Tìm sentence boundary gần nhất (dấu câu + space)
+        # Vietnamese sentence endings: . ! ? ; \n
+        last_sentence_end = max(
+            truncated.rfind('. '),
+            truncated.rfind('! '),
+            truncated.rfind('? '),
+            truncated.rfind('.\n'),
+            truncated.rfind('!\n'),
+            truncated.rfind('?\n')
+        )
+        
+        if last_sentence_end > max_chars * 0.8:  # Chỉ truncate nếu không mất quá 20%
+            return truncated[:last_sentence_end + 1]
+        else:
+            # Nếu không tìm thấy sentence boundary gần, truncate tại word boundary
+            last_space = truncated.rfind(' ')
+            if last_space > max_chars * 0.9:
+                return truncated[:last_space]
+            else:
+                # Worst case: truncate hard tại max_chars
+                logger.warning("Hard truncation applied - may cut entities")
+                return truncated
+
     def _extract_entities(self, text: str) -> List[str]:
         """Extract named entities using PhoBERT NER pipeline"""
         try:
             if self.ner_pipeline is not None:
+                # CRITICAL: Truncate text để tránh tensor size mismatch
+                # PhoBERT NER max_length = 512 tokens (~2000 chars Vietnamese)
+                # Truncate an toàn tại sentence boundary để không mất entities
+                text_truncated = self._safe_truncate(text, max_chars=2000)
+                
                 # Sử dụng PhoBERT NER pipeline
-                ner_results = self.ner_pipeline(text)
+                ner_results = self.ner_pipeline(text_truncated)
                 
                 # Extract entity text và loại bỏ duplicates
                 entities = []
@@ -352,15 +398,16 @@ class VietnameseKGExtractor:
             # Prompt tiếng Việt
             prompt = f"""Hãy mô tả quan hệ giữa '{ent1}' và '{ent2}' dựa trên đoạn văn bản:
 
-Văn bản: {context}
+    Văn bản: {context}
 
-Mô tả quan hệ (một cụm từ ngắn gọn):"""
+    Mô tả quan hệ (một cụm từ ngắn gọn):"""
             
-            # Tokenize
+            # Tokenize - FIX: Set max_length và truncation explicitly
             inputs = self.tokenizer(
                 prompt,
-                max_length=256,
-                truncation=True,
+                max_length=512,  # ViT5 base max_length
+                truncation=True,  # CRITICAL: Bật truncation
+                padding=False,    # Không cần padding cho generation
                 return_tensors="pt"
             ).to(self.device)
             
