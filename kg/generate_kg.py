@@ -14,7 +14,6 @@ from tqdm import tqdm
 from contextlib import redirect_stdout
 
 from .knowledge_graph import generate_knowledge_graph
-from .save_triples import get_response_save_path
 from .utils import set_up_logging
 
 logger = set_up_logging('generate-knowledge-graphs-books.log')

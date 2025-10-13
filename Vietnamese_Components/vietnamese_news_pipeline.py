@@ -14,6 +14,8 @@ from Vietnamese_Components.vietnamese_model_replacements import VietnameseModelM
 from Vietnamese_Components.adapted_knowledge_graph import generate_knowledge_graph_for_scripts_local
 from kg.generate_kg import save_knowledge_graph, refine_kg
 
+from typing import Tuple, List, Any
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
