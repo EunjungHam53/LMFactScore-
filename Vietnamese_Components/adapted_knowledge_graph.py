@@ -53,29 +53,25 @@ except ImportError:
     
     def initialize_knowledge_graph(names_graph, edges):
         """Initialize KG from names graph and edges"""
+        from kg.knowledge_graph import add_edge_to_knowledge_graph, MAX_PREDICATE_WORD_COUNT
+        
         knowledge_graph = nx.MultiDiGraph()
         names = set(names_graph.nodes)
         
-        # Add nodes
+        # Add nodes - ĐẢM BẢO dùng set
         for name in names:
             knowledge_graph.add_node(NamedEntity({name}))
         
-        # Add edges
+        # Add edges - SỬ DỤNG add_edge_to_knowledge_graph từ code gốc
         for chapter_index, chapter_edges in edges.items():
-            for subject, predicate, obj in chapter_edges:
-                if subject not in names or obj not in names:
-                    continue
-                
-                subj_node = next((n for n in knowledge_graph.nodes if subject in n.names), None)
-                obj_node = next((n for n in knowledge_graph.nodes if obj in n.names), None)
-                
-                if subj_node and obj_node:
-                    knowledge_graph.add_edge(
-                        subj_node, obj_node,
-                        predicate=predicate,
-                        chapter_index=chapter_index,
-                        count=1
-                    )
+            for edge in chapter_edges:
+                add_edge_to_knowledge_graph(
+                    knowledge_graph, 
+                    names, 
+                    edge,
+                    max_predicate_word_count=MAX_PREDICATE_WORD_COUNT,
+                    chapter_index=chapter_index
+                )
         
         return knowledge_graph
     

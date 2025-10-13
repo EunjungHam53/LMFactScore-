@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import List, Dict
 import argparse
 from tqdm import tqdm
+import networkx as nx
+import pickle 
+from collections import Counter
 
 from Vietnamese_Components.vietnamese_model_replacements import VietnameseModelManager
 from Vietnamese_Components.adapted_knowledge_graph import generate_knowledge_graph_for_scripts_local
@@ -108,11 +111,13 @@ class VietnameseNewsPipeline:
     def build_knowledge_graph(self, text: str, idx: str, save_path: Path) -> Tuple[any, List[str]]:
         """
         Step 3: Build Knowledge Graph
+        Tương thích 100% với code gốc từ kg/generate_kg.py
         
         Returns:
             kg: Knowledge graph object
             kg_triplets: List of KG triplets as strings
         """
+        import pickle
         logger.info("Building knowledge graph...")
         
         # Prepare data format for KG extraction
@@ -123,7 +128,7 @@ class VietnameseNewsPipeline:
             ]
         }
         
-        # Generate KG
+        # Generate KG using local extraction
         kg = generate_knowledge_graph_for_scripts_local(
             book=book,
             idx=idx,
@@ -132,25 +137,93 @@ class VietnameseNewsPipeline:
             language="vi"
         )
         
-        # Save KG
+        # === QUAN TRỌNG: Lưu theo format gốc ===
         kg_save_path = save_path / idx / '3_knowledge_graphs'
-        save_knowledge_graph(kg, idx, kg_save_path)
+        kg_save_path.mkdir(parents=True, exist_ok=True)
         
-        # Refine and extract triplets
-        refine_kg(idx, save_path / idx, topk=10, refine='ner')
+        # 1. Lưu KG bằng pickle (format gốc)
+        kg_pkl_path = kg_save_path / 'kg.pkl'
+        with open(kg_pkl_path, 'wb') as f:
+            pickle.dump(kg, f)
+        logger.info(f"Saved KG to {kg_pkl_path}")
         
-        # Load triplets
+        # 2. Refine KG và tạo final_kg.jsonl (sử dụng code gốc)
+        try:
+            from kg.generate_kg import refine_kg
+            refine_kg(idx, save_path / idx, topk=10, refine='ner')
+            logger.info("KG refinement completed")
+        except Exception as e:
+            logger.warning(f"Could not refine KG: {e}")
+            # Fallback: tự tạo final_kg.jsonl
+            self._create_final_kg_jsonl(kg, kg_save_path)
+        
+        # 3. Đọc triplets từ final_kg.jsonl
         kg_triplets = []
         kg_file = kg_save_path / 'final_kg.jsonl'
+        
         if kg_file.exists():
             with open(kg_file, 'r', encoding='utf-8') as f:
                 for line in f:
-                    data = json.loads(line)
-                    triplet = f"{data['subject']} - {data['predicate']} - {data['object']}"
-                    kg_triplets.append(triplet)
+                    try:
+                        data = json.loads(line)
+                        triplet = f"{data['subject']} - {data['predicate']} - {data['object']}"
+                        kg_triplets.append(triplet)
+                    except Exception as e:
+                        logger.debug(f"Error parsing triplet: {e}")
+        else:
+            logger.warning(f"File {kg_file} not found, extracting triplets directly from KG")
+            # Fallback: extract trực tiếp
+            for u, v, data in kg.edges(data=True):
+                triplet = f"{str(u)} - {data.get('predicate', 'related_to')} - {str(v)}"
+                kg_triplets.append(triplet)
         
         logger.info(f"Built KG with {len(kg_triplets)} triplets")
         return kg, kg_triplets
+
+    def _create_final_kg_jsonl(self, kg, save_path: Path):
+        """
+        Fallback: Tự tạo final_kg.jsonl nếu refine_kg() fail
+        Format giống code gốc
+        """
+        from collections import Counter
+        
+        # Calculate edge count cho mỗi node
+        edge_count = Counter()
+        for edge in kg.edges(data=True):
+            subject = str(edge[0])
+            object_ = str(edge[1])
+            edge_count[subject] += 1
+            edge_count[object_] += 1
+        
+        # Lưu triplets
+        final_kg_path = save_path / 'final_kg.jsonl'
+        with open(final_kg_path, 'w', encoding='utf-8') as f:
+            for u, v, data in kg.edges(data=True):
+                subject = str(u)
+                obj = str(v)
+                predicate = data.get('predicate', 'related_to')
+                chapter_index = data.get('chapter_index', 1)
+                count = data.get('count', 1)
+                
+                # Filter: skip edges với "output" trong predicate
+                if 'output' in predicate:
+                    continue
+                
+                triplet_data = {
+                    'subject': subject,
+                    'predicate': predicate,
+                    'object': obj,
+                    'chapter_index': chapter_index,
+                    'count': count,
+                    'subject_node_count': edge_count[subject],
+                    'object_node_count': edge_count[obj]
+                }
+                
+                # Chỉ lưu edges có count >= 1 (hoặc >= 2 nếu muốn filter)
+                if count >= 1:
+                    f.write(json.dumps(triplet_data, ensure_ascii=False) + '\n')
+        
+        logger.info(f"Created fallback final_kg.jsonl at {final_kg_path}")
     
     def calculate_factuality(self, text: str, summary: str, facts: List[str], kg_triplets: List[str]) -> Dict:
         """
