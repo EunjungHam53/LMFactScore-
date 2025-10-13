@@ -110,8 +110,7 @@ class LocalKGParser:
         self.language = language
         self.extractor = KnowledgeGraphExtractor(
             method=method, 
-            device=device,
-            language=language
+            device=device
         )
         logger.info(f"Initialized LocalKGParser with {method} for {language}")
     
