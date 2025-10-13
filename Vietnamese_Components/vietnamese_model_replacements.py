@@ -1,6 +1,7 @@
 """
 Vietnamese-specific models cho news summarization
 Thay thế OpenAI API với Vietnamese models
+Đã sửa: Thay spaCy bằng PhoBERT NER model
 """
 
 import torch
@@ -13,7 +14,6 @@ from transformers import (
 from typing import List, Dict, Tuple
 import logging
 import re
-import spacy
 
 logger = logging.getLogger(__name__)
 
@@ -143,19 +143,59 @@ Các sự kiện:"""
 class VietnameseKGExtractor:
     """
     Knowledge Graph extraction cho tiếng Việt
-    Sử dụng spaCy NER + ViT5 relation generation
+    Sử dụng PhoBERT NER + ViT5 relation generation
     Độ chính xác cao, không giới hạn relation types
     """
-    def __init__(self, device="cuda"):
+    def __init__(self, device="cuda", use_large_models=True):
+        """
+        Args:
+            device: cuda hoặc cpu
+            use_large_models: True để dùng large models (mạnh hơn nhưng chậm hơn)
+        """
         self.device = device
         
-        # Load Vietnamese spaCy model for NER
-        logger.info("Loading Vietnamese spaCy model for NER...")
+        # Load PhoBERT NER model thay vì spaCy
+        logger.info("Loading PhoBERT NER model...")
         try:
-            self.nlp = spacy.load("vi_core_news_lg")
-        except OSError:
-            logger.error("vi_core_news_lg not found. Install with: python -m spacy download vi_core_news_lg")
-            raise
+            # Chọn model size
+            if use_large_models:
+                # Thử các large models theo thứ tự ưu tiên
+                ner_models = [
+                    "vinai/phobert-large",  # PhoBERT Large - best for Vietnamese
+                    "NlpHUST/ner-vietnamese-electra-base",
+                ]
+            else:
+                ner_models = [
+                    "NlpHUST/ner-vietnamese-electra-base",
+                    "vinai/phobert-base",
+                ]
+            
+            # Thử load models
+            loaded = False
+            for model_name in ner_models:
+                try:
+                    logger.info(f"Trying to load {model_name}...")
+                    self.ner_pipeline = pipeline(
+                        "ner",
+                        model=model_name,
+                        aggregation_strategy="simple",  # Gộp các sub-tokens lại
+                        device=0 if device == "cuda" else -1
+                    )
+                    logger.info(f"Successfully loaded NER model: {model_name}")
+                    loaded = True
+                    break
+                except Exception as e:
+                    logger.warning(f"Could not load {model_name}: {e}")
+                    continue
+            
+            if not loaded:
+                logger.warning("Could not load any NER model")
+                logger.info("Falling back to regex-based entity extraction")
+                self.ner_pipeline = None
+        except Exception as e:
+            logger.warning(f"Error in NER model loading: {e}")
+            logger.info("Falling back to regex-based entity extraction")
+            self.ner_pipeline = None
         
         # Load ViT5 tokenizer
         logger.info("Loading ViT5 tokenizer...")
@@ -191,15 +231,70 @@ class VietnameseKGExtractor:
         return entities, relations
     
     def _extract_entities(self, text: str) -> List[str]:
-        """Extract named entities using spaCy NER"""
+        """Extract named entities using PhoBERT NER pipeline"""
         try:
-            doc = self.nlp(text)
-            entities = list(set([ent.text for ent in doc.ents]))
-            logger.info(f"Extracted {len(entities)} entities")
-            return entities
+            if self.ner_pipeline is not None:
+                # Sử dụng PhoBERT NER pipeline
+                ner_results = self.ner_pipeline(text)
+                
+                # Extract entity text và loại bỏ duplicates
+                entities = []
+                seen = set()
+                
+                for entity in ner_results:
+                    entity_text = entity['word'].strip()
+                    # Filter: chỉ lấy entities có ít nhất 2 ký tự
+                    if len(entity_text) >= 2 and entity_text not in seen:
+                        entities.append(entity_text)
+                        seen.add(entity_text)
+                
+                logger.info(f"Extracted {len(entities)} entities using PhoBERT NER")
+                return entities
+            else:
+                # Fallback: Regex-based extraction
+                return self._extract_entities_regex(text)
+                
         except Exception as e:
-            logger.error(f"Error in NER: {e}")
-            return []
+            logger.error(f"Error in PhoBERT NER: {e}")
+            logger.info("Falling back to regex-based extraction")
+            return self._extract_entities_regex(text)
+    
+    def _extract_entities_regex(self, text: str) -> List[str]:
+        """
+        Fallback: Extract entities bằng regex patterns
+        Tìm proper nouns, tên riêng, địa danh, tổ chức
+        """
+        entities = []
+        seen = set()
+        
+        # Pattern 1: Capitalized words (tên riêng)
+        # Trong tiếng Việt, tên riêng thường viết hoa chữ cái đầu
+        capitalized_pattern = r'\b[A-ZÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬÈÉẺẼẸÊỀẾỂỄỆÌÍỈĨỊÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢÙÚỦŨỤƯỪỨỬỮỰỲÝỶỸỴĐ][a-zàáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]+(?:\s+[A-ZÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬÈÉẺẼẸÊỀẾỂỄỆÌÍỈĨỊÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢÙÚỦŨỤƯỪỨỬỮỰỲÝỶỸỴĐ][a-zàáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]+)*'
+        matches = re.findall(capitalized_pattern, text)
+        
+        for match in matches:
+            match = match.strip()
+            # Filter: ít nhất 2 từ hoặc 1 từ dài hơn 3 ký tự
+            words = match.split()
+            if (len(words) >= 2 or len(match) > 3) and match not in seen:
+                entities.append(match)
+                seen.add(match)
+        
+        # Pattern 2: Các từ khóa location/organization
+        # Tìm các từ theo sau các marker như "tại", "ở", "công ty", "tổ chức"
+        location_pattern = r'(?:tại|ở|đến|từ)\s+([A-ZÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬÈÉẺẼẸÊỀẾỂỄỆÌÍỈĨỊÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢÙÚỦŨỤƯỪỨỬỮỰỲÝỶỸỴĐ][a-zàáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ\s]+?)(?=[,.]|\s+của|\s+với|\s+và)'
+        org_pattern = r'(?:công ty|tổ chức|hãng|trường|bệnh viện|đài)\s+([A-ZÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬÈÉẺẼẸÊỀẾỂỄỆÌÍỈĨỊÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢÙÚỦŨỤƯỪỨỬỮỰỲÝỶỸỴĐ][^\n,.]{2,50}?)(?=[,.])'
+        
+        for pattern in [location_pattern, org_pattern]:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
+                match = match.strip()
+                if len(match) > 2 and match not in seen:
+                    entities.append(match)
+                    seen.add(match)
+        
+        logger.info(f"Extracted {len(entities)} entities using regex fallback")
+        return entities
     
     def _extract_relations_vit5(self, text: str, entities: List[str]) -> List[Tuple[str, str, str]]:
         """
