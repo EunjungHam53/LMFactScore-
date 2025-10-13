@@ -10,8 +10,8 @@ from typing import List, Dict
 import argparse
 from tqdm import tqdm
 
-from vietnamese_model_replacements import VietnameseModelManager
-from adapted_knowledge_graph import generate_knowledge_graph_for_scripts_local
+from .vietnamese_model_replacements import VietnameseModelManager
+from .adapted_knowledge_graph import generate_knowledge_graph_for_scripts_local
 from ..kg.generate_kg import save_knowledge_graph, refine_kg
 
 logging.basicConfig(
