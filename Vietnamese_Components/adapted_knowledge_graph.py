@@ -9,7 +9,7 @@ import re
 from collections import defaultdict
 from typing import List, Dict, Tuple
 import networkx as nx
-from Core_Components.local_model_replacements import KnowledgeGraphExtractor
+from Vietnamese_Components.vietnamese_model_replacements import VietnameseKGExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -108,8 +108,8 @@ class LocalKGParser:
             language: 'vi' (Vietnamese) hoặc 'en' (English)
         """
         self.language = language
-        self.extractor = KnowledgeGraphExtractor(
-            method=method, 
+        self.extractor = VietnameseKGExtractor(
+            # method=method, 
             device=device
         )
         logger.info(f"Initialized LocalKGParser with {method} for {language}")
