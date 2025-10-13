@@ -142,29 +142,32 @@ Các sự kiện:"""
 class VietnameseKGExtractor:
     """
     Knowledge Graph extraction cho tiếng Việt
-    Sử dụng NER + Relation Extraction
+    Sử dụng spaCy NER + ViT5 relation generation
+    Độ chính xác cao, không giới hạn relation types
     """
     def __init__(self, device="cuda"):
         self.device = device
         
-        # Load Vietnamese NER model
-        logger.info("Loading Vietnamese NER model...")
-        self.ner_pipeline = pipeline(
-            "ner",
-            model="NlpHUST/ner-vietnamese-electra-base",
-            aggregation_strategy="simple",
-            device=0 if device == "cuda" else -1
-        )
+        # Load Vietnamese spaCy model for NER
+        logger.info("Loading Vietnamese spaCy model for NER...")
+        try:
+            self.nlp = spacy.load("vi_core_news_lg")
+        except OSError:
+            logger.error("vi_core_news_lg not found. Install with: python -m spacy download vi_core_news_lg")
+            raise
         
-        # Load multilingual relation extraction (REBEL hỗ trợ Vietnamese)
-        logger.info("Loading relation extraction model...")
-        self.tokenizer_rel = AutoTokenizer.from_pretrained("Babelscape/mrebel-large")
-        self.model_rel = AutoModelForSeq2SeqLM.from_pretrained(
-            "Babelscape/mrebel-large",
+        # Load ViT5 tokenizer
+        logger.info("Loading ViT5 tokenizer...")
+        self.tokenizer = AutoTokenizer.from_pretrained("VietAI/vit5-base")
+        
+        # Load ViT5 model for relation generation
+        logger.info("Loading ViT5 model for relation generation...")
+        self.relation_model = AutoModelForSeq2SeqLM.from_pretrained(
+            "VietAI/vit5-base",
             torch_dtype=torch.float16 if device == "cuda" else torch.float32
         ).to(device)
         
-        logger.info("Vietnamese KG extractor loaded")
+        logger.info("Vietnamese KG extractor loaded successfully")
     
     def extract_named_entities_and_relations(self, text: str) -> Tuple[List[str], List[Tuple[str, str, str]]]:
         """
@@ -177,164 +180,164 @@ class VietnameseKGExtractor:
         # Step 1: Extract named entities
         entities = self._extract_entities(text)
         
-        # Step 2: Extract relations
-        relations = self._extract_relations(text, entities)
+        if not entities or len(entities) < 2:
+            logger.warning("Less than 2 entities found, cannot extract relations")
+            return entities, []
+        
+        # Step 2: Extract relations using ViT5
+        relations = self._extract_relations_vit5(text, entities)
         
         return entities, relations
     
     def _extract_entities(self, text: str) -> List[str]:
-        """Extract named entities using Vietnamese NER - với chunking"""
+        """Extract named entities using spaCy NER"""
         try:
-            chunk_size = 400  # tokens tương đương ~1600 chars
-            chunks = self._chunk_text(text, chunk_size)
-            
-            all_entities = set()
-            for chunk in chunks:
-                try:
-                    ner_results = self.ner_pipeline(chunk)
-                    entities = [ent['word'] for ent in ner_results]
-                    all_entities.update(entities)
-                except Exception as chunk_err:
-                    logger.warning(f"Error processing chunk: {chunk_err}")
-                    continue
-            
-            entities = list(all_entities)
-            logger.info(f"Extracted {len(entities)} entities from {len(chunks)} chunks")
+            doc = self.nlp(text)
+            entities = list(set([ent.text for ent in doc.ents]))
+            logger.info(f"Extracted {len(entities)} entities")
             return entities
         except Exception as e:
             logger.error(f"Error in NER: {e}")
             return []
-
-    def _chunk_text(self, text: str, chunk_size: int = 400) -> List[str]:
-        """Chia text thành các chunks để xử lý"""
-        # Chia bằng sentence để không cắt giữa câu
-        sentences = self._split_vietnamese_sentences(text)
-        
-        chunks = []
-        current_chunk = []
-        current_length = 0
-        
-        for sentence in sentences:
-            sentence_length = len(sentence.split())
-            if current_length + sentence_length > chunk_size and current_chunk:
-                chunks.append(' '.join(current_chunk))
-                current_chunk = [sentence]
-                current_length = sentence_length
-            else:
-                current_chunk.append(sentence)
-                current_length += sentence_length
-        
-        if current_chunk:
-            chunks.append(' '.join(current_chunk))
-        
-        return chunks
-
-    def _split_vietnamese_sentences(self, text: str) -> List[str]:
-        """Chia text thành các câu theo cách tiếng Việt"""
-        # Split by common Vietnamese sentence endings
-        import re
-        sentences = re.split(r'(?<=[.!?])\s+', text)
-        return [s.strip() for s in sentences if s.strip()]
     
-    def _extract_relations(self, text: str, entities: List[str]) -> List[Tuple[str, str, str]]:
-        """Extract relations using mREBEL - với chunking"""
-        try:
-            chunk_size = 400
-            chunks = self._chunk_text(text, chunk_size)
-            
-            all_relations = []
-            for chunk in chunks:
-                try:
-                    # Add Vietnamese instruction prompt for better relation extraction
-                    prompt_text = f"Trích xuất các mối quan hệ từ văn bản sau:\n{chunk}"
-                    
-                    inputs = self.tokenizer_rel(
-                        prompt_text,
-                        max_length=512,
-                        truncation=True,
-                        return_tensors="pt"
-                    ).to(self.device)
-                    
-                    with torch.no_grad():
-                        outputs = self.model_rel.generate(
-                            **inputs,
-                            max_length=256,
-                            num_beams=3,
-                            num_return_sequences=1
-                        )
-                    
-                    decoded = self.tokenizer_rel.decode(outputs[0], skip_special_tokens=False)
-                    chunk_relations = self._parse_rebel_output(decoded, entities)
-                    all_relations.extend(chunk_relations)
-                except Exception as chunk_err:
-                    logger.warning(f"Error processing relation chunk: {chunk_err}")
-                    continue
-            
-            # Deduplicate relations
-            unique_relations = list(set(all_relations))
-            logger.info(f"Extracted {len(unique_relations)} relations from {len(chunks)} chunks")
-            return unique_relations
-            
-        except Exception as e:
-            logger.error(f"Error in relation extraction: {e}")
-            return []
-    
-    def _parse_rebel_output(self, decoded: str, entities: List[str]) -> List[Tuple[str, str, str]]:
-        """Parse REBEL output format - WITH DEBUG"""
-        logger.info(f"REBEL raw output: {decoded[:300]}...")  # Debug: show raw output
-        
+    def _extract_relations_vit5(self, text: str, entities: List[str]) -> List[Tuple[str, str, str]]:
+        """
+        Extract relations using ViT5 generation
+        Không giới hạn số loại relations, generate natural descriptions
+        """
         relations = []
         
-        # REBEL format variants to try
-        # Format 1: <triplet> subject <subj> predicate <obj> object </s>
-        # Format 2: subject | predicate | object
+        if len(entities) < 2:
+            return relations
         
-        if '<triplet>' in decoded:
-            logger.info("Using <triplet> format parser")
-            for triplet_str in decoded.split('<triplet>')[1:]:
-                try:
-                    if '<subj>' not in triplet_str or '<obj>' not in triplet_str:
-                        continue
-                    
-                    subject = triplet_str.split('<subj>')[0].strip()
-                    remaining = triplet_str.split('<subj>')[1]
-                    predicate = remaining.split('<obj>')[0].strip()
-                    obj = remaining.split('<obj>')[1].split('</s>')[0].strip()
-                    
-                    if subject and predicate and obj:
-                        relations.append((subject, predicate, obj))
-                        logger.debug(f"Parsed triplet: {subject} | {predicate} | {obj}")
-                except Exception as e:
-                    logger.debug(f"Error parsing triplet: {e}")
-                    continue
+        # Truncate text để input vừa vặn
+        text_truncated = text[:512 * 4]  # ~2000 chars
         
-        elif '|' in decoded:
-            # Fallback: simple pipe-separated format
-            logger.info("Using pipe-separated format parser")
-            for line in decoded.split('\n'):
-                if '|' in line:
-                    parts = [p.strip() for p in line.split('|')]
-                    if len(parts) >= 3:
-                        subject, predicate, obj = parts[0], parts[1], parts[2]
-                        if subject and predicate and obj:
-                            relations.append((subject, predicate, obj))
-                            logger.debug(f"Parsed line: {subject} | {predicate} | {obj}")
+        # Filter: chỉ lấy top entity pairs có relevance cao
+        # (tránh generate cho quá nhiều cặp, gây chậm)
+        entity_pairs = self._select_relevant_pairs(text_truncated, entities)
         
-        else:
-            # If neither format found, try to extract using spacy-like patterns
-            logger.warning(f"No standard REBEL format found. Raw output:\n{decoded}")
-            # Try simple regex pattern matching
-            import re
-            # Match patterns like "X is Y", "X has Y", "X located in Y"
-            pattern = r'(\w+(?:\s+\w+)*?)\s+(?:is|has|located in|of|in|at|by|from)\s+(\w+(?:\s+\w+)*)'
-            matches = re.findall(pattern, decoded, re.IGNORECASE)
-            for subject, obj in matches[:5]:  # Limit to 5 to avoid noise
-                predicate = 'related_to'
-                relations.append((subject, predicate, obj))
-                logger.debug(f"Pattern-matched: {subject} | {predicate} | {obj}")
+        logger.info(f"Processing {len(entity_pairs)} entity pairs for relation extraction")
         
-        logger.info(f"Successfully parsed {len(relations)} relations from output")
+        # Batch generate relations
+        for ent1, ent2 in entity_pairs:
+            try:
+                relation = self._generate_relation(text_truncated, ent1, ent2)
+                
+                if relation and relation.lower() != "không có quan hệ":
+                    # Clean relation
+                    relation = relation.strip()
+                    if len(relation) > 3:  # Filter out very short/meaningless relations
+                        relations.append((ent1, relation, ent2))
+                        logger.debug(f"Relation: {ent1} - {relation} - {ent2}")
+            
+            except Exception as e:
+                logger.debug(f"Error extracting relation ({ent1}, {ent2}): {e}")
+                continue
+        
+        logger.info(f"Extracted {len(relations)} relations")
         return relations
+    
+    def _select_relevant_pairs(self, text: str, entities: List[str], max_pairs: int = 15) -> List[Tuple[str, str]]:
+        """
+        Chọn các cặp entities có relevance cao
+        Tránh generate cho quá nhiều cặp (gây chậm)
+        """
+        pairs = []
+        
+        # Co-occurrence score: 2 entities gần nhau trong text
+        for i, ent1 in enumerate(entities):
+            for j, ent2 in enumerate(entities):
+                if i >= j:  # Tránh duplicate (ent1-ent2 và ent2-ent1)
+                    continue
+                
+                # Tìm vị trí của 2 entities trong text
+                pos1 = text.find(ent1)
+                pos2 = text.find(ent2)
+                
+                if pos1 == -1 or pos2 == -1:
+                    continue
+                
+                # Distance score: entities càng gần càng cao
+                distance = abs(pos1 - pos2)
+                if distance < 500:  # Chỉ lấy entities trong vòng 500 chars
+                    score = 1.0 - (distance / 500.0)
+                    pairs.append((score, ent1, ent2))
+        
+        # Sort by relevance score, lấy top max_pairs
+        pairs.sort(reverse=True)
+        selected = [(ent1, ent2) for _, ent1, ent2 in pairs[:max_pairs]]
+        
+        return selected
+    
+    def _generate_relation(self, text: str, ent1: str, ent2: str) -> str:
+        """
+        Generate relation description giữa 2 entities using ViT5
+        Prompt tiếng Việt để model hiểu rõ task
+        """
+        try:
+            # Tìm context xung quanh 2 entities
+            context = self._extract_context(text, ent1, ent2, window=150)
+            
+            # Prompt tiếng Việt
+            prompt = f"""Hãy mô tả quan hệ giữa '{ent1}' và '{ent2}' dựa trên đoạn văn bản:
+
+Văn bản: {context}
+
+Mô tả quan hệ (một cụm từ ngắn gọn):"""
+            
+            # Tokenize
+            inputs = self.tokenizer(
+                prompt,
+                max_length=256,
+                truncation=True,
+                return_tensors="pt"
+            ).to(self.device)
+            
+            # Generate
+            with torch.no_grad():
+                outputs = self.relation_model.generate(
+                    **inputs,
+                    max_length=25,  # Giới hạn độ dài output
+                    num_beams=3,
+                    temperature=0.5,
+                    do_sample=False,
+                    early_stopping=True
+                )
+            
+            # Decode
+            relation = self.tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+            
+            return relation
+        
+        except Exception as e:
+            logger.debug(f"Error in relation generation: {e}")
+            return None
+    
+    def _extract_context(self, text: str, ent1: str, ent2: str, window: int = 150) -> str:
+        """
+        Extract context xung quanh 2 entities để generation tốt hơn
+        """
+        try:
+            pos1 = text.find(ent1)
+            pos2 = text.find(ent2)
+            
+            if pos1 == -1 or pos2 == -1:
+                return text[:window]
+            
+            # Find common context window
+            start = min(pos1, pos2) - window // 2
+            start = max(0, start)
+            
+            end = max(pos1 + len(ent1), pos2 + len(ent2)) + window // 2
+            end = min(len(text), end)
+            
+            context = text[start:end]
+            return context
+        
+        except Exception as e:
+            logger.debug(f"Error extracting context: {e}")
+            return text[:window]
 
 
 class VietnameseFactVerifier:
