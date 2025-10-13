@@ -5,7 +5,6 @@ from pathlib import Path
 import json
 import argparse
 import os
-import openai
 import time
 import numpy as np
 
@@ -14,54 +13,12 @@ from pyvis.network import Network
 from tqdm import tqdm
 from contextlib import redirect_stdout
 
-
-
 from .knowledge_graph import generate_knowledge_graph
-from .openai_api import load_response_text
 from .save_triples import get_response_save_path
 from .utils import set_up_logging
 
 logger = set_up_logging('generate-knowledge-graphs-books.log')
 KNOWLEDGE_GRAPHS_DIRECTORY_PATH = Path('../knowledge-graphs_new')
-
-
-def gpt_inference(system_instruction, prompt, retries=10, delay=5):
-    openai.api_key = os.getenv('OPENAI_API_KEY')
-    messages = [{"role": "system", "content": system_instruction}, 
-                {"role": "user", "content": prompt}]
-    
-    for attempt in range(retries):
-        try:
-            response = openai.ChatCompletion.create(
-                model='gpt-4o-mini-2024-07-18',
-                messages=messages,
-                temperature=0.0,
-                max_tokens=128,
-                top_p=0.5,
-                frequency_penalty=0,
-                presence_penalty=0
-            )
-            result = response['choices'][0]['message']['content']
-            return result
-        except openai.error.APIError as e:
-            
-            time.sleep(delay)
-            continue
-
-
-def generate_knowledge_graph_for_scripts(book, idx, save_path):
-    """Use the responses from the OpenAI API to generate a knowledge graph for a book."""
-    response_texts = defaultdict(list)
-    project_gutenberg_id = book['id']
-    for chapter in book['chapters']:
-        chapter_index = chapter['index']
-        chapter_responses_directory = get_response_save_path(
-            idx, save_path, project_gutenberg_id, chapter_index)
-        for response_path in chapter_responses_directory.glob('*.json'):
-            response_text = load_response_text(response_path)
-            response_texts[chapter_index].append(response_text)
-    knowledge_graph = generate_knowledge_graph(response_texts, project_gutenberg_id)
-    return knowledge_graph
 
 
 def save_knowledge_graph(knowledge_graph,
@@ -147,23 +104,6 @@ def fuse_subject(subjects):
     else:
         return subjects
 
-def init_kg(idx, save_root, kg_path):
-    """
-    Generate knowledge graphs for book in the books dataset using saved responses from the OpenAI API.
-    """
-    # 1) load data
-    input_path = f'{save_root}/1_preprocessed/script.json'
-    with open(input_path, 'r') as f:
-        script = json.load(f)
-
-    # 2) generate character relation graph
-    response_path = f'{save_root}/2_responses'
-    knowledge_graph = generate_knowledge_graph_for_scripts(script, idx, response_path )
-    project_gutenberg_id = script['id']
-
-    # 3) save character relation graph
-    os.makedirs(kg_path, exist_ok=True)
-    save_knowledge_graph(knowledge_graph, project_gutenberg_id, kg_path)
 
 def refine_kg(idx, kg_path, topk, refine='ner'):
     # 1) load data

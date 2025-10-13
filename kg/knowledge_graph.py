@@ -11,13 +11,12 @@ from .utils import strip_and_remove_empty_strings
 
 logger = logging.getLogger(__name__)
 
-PROMPT_FILE_PATH = Path('templates/story-prompt.txt')
+# PROMPT_FILE_PATH = Path('templates/story-prompt.txt')
 MAX_RESPONSE_EDGE_COUNT = 15
 MAX_PREDICATE_WORD_COUNT = 5
 MAX_POSSESSION_WORD_COUNT = 2
 MAX_MERGEABLE_NODE_EDGE_COUNT = 2
 MIN_NODE_EDGE_COUNT = 1
-
 
 class NamedEntity:
     """A knowledge graph node representing a named entity."""
