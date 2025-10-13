@@ -9,7 +9,7 @@ import re
 from collections import defaultdict
 from typing import List, Dict, Tuple
 import networkx as nx
-from ..Core_Components.local_model_replacements import KnowledgeGraphExtractor
+from Core_Components.local_model_replacements import KnowledgeGraphExtractor
 
 logger = logging.getLogger(__name__)
 

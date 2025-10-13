@@ -4,7 +4,7 @@ Test với data format của bạn
 """
 
 import json
-from .vietnamese_news_pipeline import VietnameseNewsPipeline
+from Vietnamese_Components.vietnamese_news_pipeline import VietnameseNewsPipeline
 import logging
 
 logging.basicConfig(level=logging.INFO)

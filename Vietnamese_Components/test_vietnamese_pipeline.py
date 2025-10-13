@@ -4,7 +4,7 @@ Test script cho Vietnamese News Pipeline
 
 import json
 from pathlib import Path
-from .vietnamese_news_pipeline import VietnameseNewsPipeline
+from Vietnamese_Components.vietnamese_news_pipeline import VietnameseNewsPipeline
 
 # Example data giống format của bạn
 EXAMPLE_NEWS = {
