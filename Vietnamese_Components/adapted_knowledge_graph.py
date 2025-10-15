@@ -237,7 +237,12 @@ def generate_knowledge_graph_local(
     logger.info(f"Building knowledge graph with {len(names)} entity groups and {sum(len(e) for e in edges.values())} edges")
     
     names_graph = generate_names_graph(names)
+    logger.info(f"Names graph: {list(names_graph.nodes())}")
+    
     knowledge_graph = initialize_knowledge_graph(names_graph, edges)
+    logger.info(f"After init - KG nodes: {knowledge_graph.number_of_nodes()}, edges: {knowledge_graph.number_of_edges()}")
+    logger.debug(f"KG edges data: {[(str(u), str(v), data) for u, v, data in knowledge_graph.edges(data=True)]}")
+    
     merge_same_entity_nodes(knowledge_graph, names_graph)
     remove_nodes_with_few_edges(knowledge_graph)
     

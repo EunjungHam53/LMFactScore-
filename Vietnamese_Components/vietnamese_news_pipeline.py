@@ -147,69 +147,47 @@ class VietnameseNewsPipeline:
             pickle.dump(kg, f)
         logger.info(f"Saved KG to {kg_pkl_path}")
         
-        # 2. Refine KG và tạo final_kg.jsonl (sử dụng code gốc)
-        try:
-            from kg.generate_kg import refine_kg
-            refine_kg(idx, save_path / idx, topk=10, refine='ner')
-            logger.info("KG refinement completed")
-        except Exception as e:
-            logger.warning(f"Could not refine KG: {e}")
-            # Fallback: tự tạo final_kg.jsonl
-            self._create_final_kg_jsonl(kg, kg_save_path)
-        
-        # 3. Đọc triplets từ final_kg.jsonl
-        kg_triplets = []
-        kg_file = kg_save_path / 'final_kg.jsonl'
-        
-        if kg_file.exists():
-            with open(kg_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    try:
-                        data = json.loads(line)
-                        triplet = f"{data['subject']} - {data['predicate']} - {data['object']}"
-                        kg_triplets.append(triplet)
-                    except Exception as e:
-                        logger.debug(f"Error parsing triplet: {e}")
-        else:
-            logger.warning(f"File {kg_file} not found, extracting triplets directly from KG")
-            # Fallback: extract trực tiếp
-            for u, v, data in kg.edges(data=True):
-                triplet = f"{str(u)} - {data.get('predicate', 'related_to')} - {str(v)}"
-                kg_triplets.append(triplet)
-        
-        logger.info(f"Built KG with {len(kg_triplets)} triplets")
+        # 2. Export KG edges to final_kg.jsonl
+        kg_triplets = self._export_kg_to_jsonl(kg, kg_save_path)
         return kg, kg_triplets
 
-    def _create_final_kg_jsonl(self, kg, save_path: Path):
-        """
-        Fallback: Tự tạo final_kg.jsonl nếu refine_kg() fail
-        Format giống code gốc
-        """
+    def _export_kg_to_jsonl(self, kg: nx.MultiDiGraph, save_path: Path) -> List[str]:
+        """Export KG edges directly to final_kg.jsonl"""
         from collections import Counter
         
-        # Calculate edge count cho mỗi node
-        edge_count = Counter()
-        for edge in kg.edges(data=True):
-            subject = str(edge[0])
-            object_ = str(edge[1])
-            edge_count[subject] += 1
-            edge_count[object_] += 1
+        logger.info("Exporting KG edges to final_kg.jsonl...")
         
-        # Lưu triplets
+        if kg.number_of_edges() == 0:
+            logger.warning("KG has no edges!")
+            final_kg_path = save_path / 'final_kg.jsonl'
+            final_kg_path.touch()
+            return []
+        
+        edge_count = Counter()
+        for u, v in kg.edges():
+            subject_str = str(u)
+            object_str = str(v)
+            edge_count[subject_str] += 1
+            edge_count[object_str] += 1
+        
+        triplets = []
         final_kg_path = save_path / 'final_kg.jsonl'
+        
         with open(final_kg_path, 'w', encoding='utf-8') as f:
-            for u, v, data in kg.edges(data=True):
+            for u, v, edge_data in kg.edges(data=True):
                 subject = str(u)
                 obj = str(v)
-                predicate = data.get('predicate', 'related_to')
-                chapter_index = data.get('chapter_index', 1)
-                count = data.get('count', 1)
+                predicate = edge_data.get('predicate', 'related_to')
+                chapter_index = edge_data.get('chapter_index', 1)
+                count = edge_data.get('count', 1)
                 
-                # Filter: skip edges với "output" trong predicate
-                if 'output' in predicate:
+                if not predicate or len(predicate.strip()) == 0:
+                    logger.debug(f"Skipping edge with empty predicate: {subject} -> {obj}")
                     continue
                 
-                triplet_data = {
+                predicate = predicate.strip()
+                
+                triplet_record = {
                     'subject': subject,
                     'predicate': predicate,
                     'object': obj,
@@ -219,11 +197,15 @@ class VietnameseNewsPipeline:
                     'object_node_count': edge_count[obj]
                 }
                 
-                # Chỉ lưu edges có count >= 1 (hoặc >= 2 nếu muốn filter)
-                if count >= 1:
-                    f.write(json.dumps(triplet_data, ensure_ascii=False) + '\n')
+                f.write(json.dumps(triplet_record, ensure_ascii=False) + '\n')
+                triplets.append(f"{subject} - {predicate} - {obj}")
         
-        logger.info(f"Created fallback final_kg.jsonl at {final_kg_path}")
+        logger.info(f"Successfully exported {len(triplets)} triplets to {final_kg_path}")
+        
+        if len(triplets) == 0:
+            logger.error("WARNING: No triplets were exported! Check KG data.")
+        
+        return triplets
     
     def calculate_factuality(self, text: str, summary: str, facts: List[str], kg_triplets: List[str]) -> Dict:
         """
