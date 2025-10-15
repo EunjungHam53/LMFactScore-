@@ -479,23 +479,28 @@ class VietnameseFactVerifier:
     def verify_fact(self, premise: str, hypothesis: str, kg_context: str = "") -> Tuple[float, str]:
         """
         Verify xem hypothesis có được support bởi premise không
+        FIX: Truncate premise để fit vào 512 token limit của NLI model
         
         Args:
-            premise: Vietnamese source text
-            hypothesis: Vietnamese statement to verify
+            premise: Vietnamese source text (có thể rất dài)
+            hypothesis: Vietnamese statement to verify (ngắn)
             kg_context: KG context (optional)
             
         Returns:
             score: 1.0 nếu supported, 0.0 nếu contradicted
             feedback: Feedback tiếng Việt nếu không supported
         """
-        # Combine premise với KG context
-        full_premise = premise
-        if kg_context:
-            full_premise = f"{premise}\nThông tin liên quan: {kg_context}"
+        # FIX 1: Truncate premise thông minh
+        # Thay vì lấy premise full, chỉ lấy phần liên quan nhất
+        premise_truncated = self._truncate_premise_for_nli(premise, hypothesis, max_length=400)
         
-        # Run NLI
+        # Combine với KG context nếu có
+        full_premise = premise_truncated
+        if kg_context:
+            full_premise = f"{premise_truncated}\nThông tin liên quan: {kg_context}"
+        
         try:
+            # Run NLI
             result = self.nli_pipeline({
                 "text": full_premise,
                 "text_pair": hypothesis
@@ -503,6 +508,8 @@ class VietnameseFactVerifier:
             
             label = result['label'].lower()
             confidence = result['score']
+            
+            logger.debug(f"NLI result - Label: {label}, Confidence: {confidence:.3f}")
             
             if 'entail' in label or 'support' in label:
                 return 1.0, ""
@@ -518,7 +525,60 @@ class VietnameseFactVerifier:
         
         except Exception as e:
             logger.error(f"Error in fact verification: {e}")
-            return 0.5, "Lỗi khi xác minh"
+            # Fallback: trả về neutral score thay vì error
+            return 0.5, f"Lỗi khi xác minh: {str(e)[:50]}"
+
+
+    def _truncate_premise_for_nli(self, premise: str, hypothesis: str, max_length: int = 400) -> str:
+        """
+        Truncate premise thông minh dựa trên hypothesis
+        Tìm keywords từ hypothesis trong premise, lấy context xung quanh
+        
+        Args:
+            premise: Toàn bộ source text
+            hypothesis: Fact cần verify
+            max_length: Max characters cho truncated premise
+            
+        Returns:
+            Truncated premise (khoảng 400 chars)
+        """
+        if len(premise) <= max_length:
+            return premise
+        
+        # Strategy 1: Tìm keywords từ hypothesis trong premise
+        hypothesis_words = hypothesis.split()
+        
+        best_match_pos = -1
+        best_match_count = 0
+        
+        # Tìm vị trí có nhiều keywords của hypothesis nhất
+        for i in range(0, len(premise) - 100, 50):  # Slide window
+            window = premise[i:i+200]
+            match_count = sum(1 for word in hypothesis_words if word.lower() in window.lower())
+            
+            if match_count > best_match_count:
+                best_match_count = match_count
+                best_match_pos = i
+        
+        # Strategy 2: Nếu tìm được keywords, lấy context xung quanh
+        if best_match_pos >= 0 and best_match_count > 0:
+            # Lấy 200 chars trước + 200 chars sau
+            start = max(0, best_match_pos - 100)
+            end = min(len(premise), best_match_pos + 300)
+            truncated = premise[start:end]
+            
+            logger.debug(f"Found {best_match_count} keywords at position {best_match_pos}")
+        else:
+            # Strategy 3: Nếu không tìm được, lấy phần đầu của premise
+            truncated = premise[:max_length]
+            logger.debug("No keywords found, using beginning of premise")
+        
+        # Truncate tại sentence boundary để tránh cắt giữa câu
+        last_period = truncated.rfind('.')
+        if last_period > max_length * 0.7:
+            truncated = truncated[:last_period + 1]
+        
+        return truncated.strip()
 
 
 class VietnameseModelManager:
